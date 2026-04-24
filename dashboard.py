@@ -73,7 +73,7 @@ if arquivo_upload is not None:
                 linha_resultado = {
                     'Convênio': row['CONVENIO'],
                     'Tipo de Produto': row['TIPO DE PRODUTO'],
-                    'Comissão Total ($)': round(row['COMISSAO_TOTAL'], 2)
+                    'Perc de Comissão Total': round(row['COMISSAO_TOTAL'], 2)
                 }
                 
                 for grupo in grupos_base:
