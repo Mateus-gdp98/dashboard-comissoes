@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 
 # Configuração da página
-st.set_page_config(page_title="Dashboard de Comissões e Produção", layout="wide")
+st.set_page_config(page_title="Dashboard de Equivalência", layout="wide")
 
 st.title("📊 Painel de Comissões e Curva ABC de Produção")
 st.markdown("Faça o upload da planilha geral de comissões e da planilha de produção para gerar o estudo cruzado.")
@@ -26,11 +26,35 @@ if arquivo_comissao is not None and arquivo_producao is not None:
             df_com = pd.read_excel(arquivo_comissao, sheet_name=1)
             
             if arquivo_producao.name.endswith('.csv'):
-                # engine python e sep=None ajuda a ler tanto CSV separado por vírgula quanto ponto-e-vírgula (padrão BR)
+                # engine python e sep=None ajuda a ler tanto CSV separado por vírgula quanto ponto-e-vírgula
                 df_prod = pd.read_csv(arquivo_producao, sep=None, engine='python')
             else:
                 df_prod = pd.read_excel(arquivo_producao)
             
+            df_prod['VALOR PROPOSTA'] = pd.to_numeric(df_prod['VALOR PROPOSTA'], errors='coerce').fillna(0)
+
+            # ==========================================
+            # 1.5 FILTRO DE BANCO (NOVIDADE)
+            # ==========================================
+            lista_bancos = sorted(df_prod['BANCO'].dropna().unique().tolist())
+            
+            # Tenta descobrir o banco automaticamente cruzando os nomes dos produtos
+            produtos_comissao = df_com['PRODUTO'].dropna().unique()
+            bancos_sugeridos = df_prod[df_prod['PRODUTO'].isin(produtos_comissao)]['BANCO'].value_counts()
+            
+            banco_padrao = bancos_sugeridos.index[0] if not bancos_sugeridos.empty else lista_bancos[0]
+            idx_padrao = lista_bancos.index(banco_padrao) if banco_padrao in lista_bancos else 0
+            
+            banco_selecionado = st.sidebar.selectbox("🏦 Banco Analisado", options=lista_bancos, index=idx_padrao)
+            
+            # Filtra a produção APENAS para o banco selecionado
+            df_prod_banco = df_prod[df_prod['BANCO'] == banco_selecionado]
+            
+            # Cálculos Globais para a métrica de porcentagem
+            total_prod_geral = df_prod['VALOR PROPOSTA'].sum()
+            total_prod_banco = df_prod_banco['VALOR PROPOSTA'].sum()
+            perc_banco_total = (total_prod_banco / total_prod_geral * 100) if total_prod_geral > 0 else 0
+
             # ==========================================
             # 2. LIMPEZA BASE DE COMISSÕES
             # ==========================================
@@ -41,24 +65,21 @@ if arquivo_comissao is not None and arquivo_producao is not None:
             legenda_produtos = {'N': 'Novo', 'C': 'Compra', 'R': 'Refin', 'F': 'Refin de Port', 'P': 'Port'}
             df_com['TIPO DE PRODUTO'] = df_com['TIPO DE PRODUTO'].map(legenda_produtos).fillna(df_com['TIPO DE PRODUTO'])
             
-            # PASSO 2 (Aprimoramento): Apenas os maiores prazos (P FINAL)
+            # Apenas os maiores prazos (P FINAL)
             df_com['P FINAL'] = pd.to_numeric(df_com['P FINAL'], errors='coerce').fillna(0)
-            # Calcula o maior P FINAL para cada par (CONVENIO e TIPO DE PRODUTO)
             max_p_final = df_com.groupby(['CONVENIO', 'TIPO DE PRODUTO'])['P FINAL'].transform('max')
             df_com = df_com[df_com['P FINAL'] == max_p_final]
 
             # ==========================================
             # 3. TRATAMENTO DA PRODUÇÃO & TOP 10 + CLT/FGTS
             # ==========================================
-            df_prod['VALOR PROPOSTA'] = pd.to_numeric(df_prod['VALOR PROPOSTA'], errors='coerce').fillna(0)
-            
-            # Somar produção por Órgão para achar os maiores
-            prod_por_orgao = df_prod.groupby('ORGAO')['VALOR PROPOSTA'].sum().reset_index()
+            # Somar produção por Órgão apenas do Banco filtrado
+            prod_por_orgao = df_prod_banco.groupby('ORGAO')['VALOR PROPOSTA'].sum().reset_index()
             prod_por_orgao = prod_por_orgao.sort_values(by='VALOR PROPOSTA', ascending=False)
             
             # Identificar FGTS e CLT
             orgaos_destaque = prod_por_orgao[prod_por_orgao['ORGAO'].astype(str).str.upper().isin(['FGTS', 'CLT'])]['ORGAO'].tolist()
-            # Identificar os top 10 (tirando FGTS e CLT da conta para não duplicar)
+            # Identificar os top 10 EXCLUINDO FGTS e CLT (Assim garante 10 órgãos novos)
             outros_orgaos = prod_por_orgao[~prod_por_orgao['ORGAO'].astype(str).str.upper().isin(['FGTS', 'CLT'])]['ORGAO'].head(10).tolist()
             
             # Lista com os padrões que devem vir selecionados
@@ -80,13 +101,13 @@ if arquivo_comissao is not None and arquivo_producao is not None:
             df_filtrado = df_com[df_com['CONVENIO'].isin(convenios_selecionados) & df_com['TIPO DE PRODUTO'].isin(produtos_selecionados)]
             
             if df_filtrado.empty:
-                st.warning("⚠️ Nenhum dado encontrado após os filtros.")
+                st.warning("⚠️ Nenhum dado de comissão encontrado para os filtros selecionados.")
             else:
                 # ==========================================
                 # 5. CRUZAMENTO DE DADOS E REGRA DOS 70%
                 # ==========================================
-                # Somar produção por PRODUTO (nome da tabela)
-                prod_por_produto = df_prod.groupby('PRODUTO')['VALOR PROPOSTA'].sum().reset_index()
+                # Somar produção por PRODUTO do banco selecionado
+                prod_por_produto = df_prod_banco.groupby('PRODUTO')['VALOR PROPOSTA'].sum().reset_index()
                 
                 # Juntar a produção com as regras de comissão
                 df_filtrado = df_filtrado.merge(prod_por_produto, on='PRODUTO', how='left')
@@ -102,7 +123,7 @@ if arquivo_comissao is not None and arquivo_producao is not None:
                 # Percentual acumulado
                 df_filtrado['% CUMULATIVA'] = (df_filtrado['CUMSUM_PROD'] / df_filtrado['PROD_TOTAL_GRUPO']).fillna(0)
                 
-                # REGRA 70%: Pegamos a porcentagem da linha anterior. Se a anterior já bateu 70%, a atual e as próximas não entram.
+                # REGRA 70%: Pegamos a porcentagem da linha anterior
                 df_filtrado['% CUMULATIVA_ANTERIOR'] = df_filtrado.groupby(['CONVENIO', 'TIPO DE PRODUTO'])['% CUMULATIVA'].shift(1).fillna(0)
                 df_70 = df_filtrado[df_filtrado['% CUMULATIVA_ANTERIOR'] < 0.70]
                 
@@ -117,11 +138,11 @@ if arquivo_comissao is not None and arquivo_producao is not None:
                 
                 grupos_base = ['OURO', 'PRIME', 'PRIME 1', 'PRIME 2', 'PRIME 3', 
                                'PRIVATE', 'PRIVATE 1', 'PRIVATE 2', 'PRIVATE 3', 
-                               'DIAMANTE', 'DIAMANTE 1', 'DIAMANTE 2', 'DIAMANTE 3']
+                               'DIAMANTE', 'DIAMANTE 1', 'DIAMANTE 2', 'DIAMANTE 3', 'EMP 90', 'EMP 95', 'EMP 98',
+                               'EMP 100', 'VIP', 'VIP 1', 'VIP 2', 'VIP 3', 'MASTER', 'TESTE8', 'TESTE9', 'TESTE10']
                 
                 resultados = []
                 
-                # Agora o agrupamento inclui o NOME DO PRODUTO (Tabela) para sabermos quem compôs os 70%
                 df_agrupado = df_70.groupby(['CONVENIO', 'TIPO DE PRODUTO', 'PRODUTO']).sum(numeric_only=True).reset_index()
                 
                 for index, row in df_agrupado.iterrows():
@@ -158,17 +179,25 @@ if arquivo_comissao is not None and arquivo_producao is not None:
                 
                 st.success("Dados processados com sucesso! Exibindo apenas as tabelas responsáveis por 70% do volume.")
                 
-                # Métricas Rápidas
-                col1, col2, col3 = st.columns(3)
+                # Métricas Rápidas Atualizadas (4 Colunas)
+                col1, col2, col3, col4 = st.columns(4)
                 col1.metric("Convênios Filtrados", len(df_final['Convênio'].unique()))
-                col2.metric("Tabelas Selecionadas (Curva ABC)", len(df_final['Produto (Tabela)'].unique()))
+                col2.metric("Tabelas Selecionadas", len(df_final['Produto (Tabela)'].unique()))
                 
                 soma_prod_exibida = df_70['VALOR PROPOSTA'].sum()
                 soma_formatada = f"R$ {soma_prod_exibida:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-                col3.metric("Volume Produzido Exibido", soma_formatada)
+                col3.metric("Volume ABC Exibido", soma_formatada)
+                
+                # Nova métrica do Banco vs Produção Geral
+                soma_banco_formatada = f"R$ {total_prod_banco:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+                col4.metric(
+                    label=f"Total Produzido ({banco_selecionado})", 
+                    value=soma_banco_formatada, 
+                    delta=f"{perc_banco_total:.2f}% do volume geral",
+                    delta_color="normal"
+                )
                 
                 st.subheader("Tabela de Equivalência (%)")
-                # Exibe sem o índice lateral numérico para ficar mais clean
                 st.dataframe(df_final, use_container_width=True, hide_index=True)
                 
                 csv = df_final.to_csv(index=False, sep=';', decimal=',')
