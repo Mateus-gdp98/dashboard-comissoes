@@ -1,5 +1,6 @@
 import streamlit as st
 import pandas as pd
+import io
 
 # Configuração da página
 st.set_page_config(page_title="Dashboard de Equivalência", layout="wide")
@@ -133,7 +134,7 @@ if arquivo_comissao is not None and arquivo_producao is not None:
                         'Prazo Máx.': row['P FINAL'],
                         'Produção R$ Original': row['VALOR PROPOSTA'],
                         'Produção R$': f"R$ {row['VALOR PROPOSTA']:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."),
-                        'Comissão Total ($)': float(row['COMISSAO_TOTAL']) # Mantém float para facilitar o max()
+                        'Comissão Total ($)': float(row['COMISSAO_TOTAL'])
                     }
                     
                     for grupo in grupos_base:
@@ -150,7 +151,7 @@ if arquivo_comissao is not None and arquivo_producao is not None:
                     resultados.append(linha_resultado)
 
                 # ==========================================
-                # 7. ADICIONANDO AS MÉDIAS E REGRA DE 0 PRODUÇÃO
+                # 7. ADICIONANDO AS MÉDIAS E ESPAÇAMENTO
                 # ==========================================
                 df_parcial = pd.DataFrame(resultados)
                 linhas_finais = []
@@ -159,24 +160,22 @@ if arquivo_comissao is not None and arquivo_producao is not None:
                 
                 for (conv, tipo), group_df in df_parcial.groupby(['Convênio', 'Tipo de Produto'], sort=False):
                     
-                    # NOVA REGRA: Se a produção total do grupo for 0, mantém só a tabela com MAIOR comissão
                     if group_df['Produção R$ Original'].sum() == 0:
                         idx_max_comissao = group_df['Comissão Total ($)'].idxmax()
                         group_df = group_df.loc[[idx_max_comissao]]
                     
-                    # 7.1. Adiciona as linhas normais daquele bloco
+                    # Adiciona as linhas normais
                     for _, row in group_df.iterrows():
                         row_dict = row.to_dict()
                         for c in colunas_perc:
                             if pd.notnull(row_dict[c]):
                                 row_dict[c] = f"{row_dict[c]:.2f}%"
                         
-                        # Formata a comissão para string com 2 casas decimais
                         row_dict['Comissão Total ($)'] = f"{row_dict['Comissão Total ($)']:.2f}"
                         row_dict.pop('Produção R$ Original', None)
                         linhas_finais.append(row_dict)
                         
-                    # 7.2. Cria a linha da Média
+                    # Cria a linha da Média
                     media_row = {
                         'Convênio': conv,
                         'Tipo de Produto': tipo,
@@ -185,23 +184,34 @@ if arquivo_comissao is not None and arquivo_producao is not None:
                         'Produção R$': '-',
                         'Comissão Total ($)': '-'
                     }
-                    # Calcula a média (que no caso de prod 0 será exatamente o valor da maior tabela)
                     for c in colunas_perc:
                         media_val = group_df[c].mean()
                         media_row[c] = f"{media_val:.2f}%" if pd.notnull(media_val) else "0.00%"
                         
                     linhas_finais.append(media_row)
 
+                    # NOVA REGRA: Linha de "Respiro" (Espaçamento para separar os blocos visualmente)
+                    empty_row = {
+                        'Convênio': '',
+                        'Tipo de Produto': '',
+                        'Produto (Tabela)': '',
+                        'Prazo Máx.': '',
+                        'Produção R$': '',
+                        'Comissão Total ($)': ''
+                    }
+                    for c in colunas_perc:
+                        empty_row[c] = ""
+                    linhas_finais.append(empty_row)
+
                 df_final = pd.DataFrame(linhas_finais)
 
                 # ==========================================
                 # 8. EXIBIÇÃO NO DASHBOARD
                 # ==========================================
-                st.success("Dados processados com sucesso! Exibindo ~70% do volume com a linha de médias inteligente.")
+                st.success("Dados processados com sucesso! Exibindo ~70% do volume com layout otimizado.")
                 
                 col1, col2, col3, col4 = st.columns(4)
                 
-                # Conta quantidade única excluindo a linha de média
                 qtd_convenios = df_parcial['Convênio'].nunique()
                 qtd_tabelas = df_parcial['Produto (Tabela)'].nunique()
                 soma_prod_exibida = df_parcial['Produção R$ Original'].sum()
@@ -229,19 +239,26 @@ if arquivo_comissao is not None and arquivo_producao is not None:
                 
                 st.subheader("Tabela de Equivalência (%)")
                 
+                # Nova formatação de cor, mais agradável e amigável aos olhos (#cbd5e1)
                 def style_media(row):
                     if row['Produto (Tabela)'] == '➡️ MÉDIA DO GRUPO':
-                        return ['background-color: #f0f2f6; font-weight: bold; color: #000000;'] * len(row)
+                        return ['background-color: #cbd5e1; font-weight: bold; color: #1e293b;'] * len(row)
                     return [''] * len(row)
                     
                 st.dataframe(df_final.style.apply(style_media, axis=1), use_container_width=True, hide_index=True)
                 
-                csv = df_final.to_csv(index=False, sep=';', decimal=',')
+                # ==========================================
+                # EXPORTAÇÃO NATIVA EM EXCEL (.xlsx)
+                # ==========================================
+                buffer = io.BytesIO()
+                with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
+                    df_final.to_excel(writer, index=False, sheet_name='Estudo_Comissoes')
+                
                 st.download_button(
-                    label="📥 Baixar Estudo Completo (CSV)",
-                    data=csv,
-                    file_name='estudo_comissoes_producao_diretoria.csv',
-                    mime='text/csv',
+                    label="📥 Baixar Estudo Completo (XLSX)",
+                    data=buffer.getvalue(),
+                    file_name='estudo_comissoes_producao_diretoria.xlsx',
+                    mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
                 )
 
     except Exception as e:
