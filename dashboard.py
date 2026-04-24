@@ -35,7 +35,6 @@ if arquivo_comissao is not None and arquivo_producao is not None:
             max_p_final = df_com.groupby(['CONVENIO', 'TIPO DE PRODUTO'])['P FINAL'].transform('max')
             df_com = df_com[df_com['P FINAL'] == max_p_final]
 
-            # Salva os convênios que sobreviveram aos filtros de limpeza
             valid_convenios = df_com['CONVENIO'].dropna().unique().tolist()
 
             # ==========================================
@@ -49,7 +48,6 @@ if arquivo_comissao is not None and arquivo_producao is not None:
             df_prod['VALOR PROPOSTA'] = pd.to_numeric(df_prod['VALOR PROPOSTA'], errors='coerce').fillna(0)
             df_prod['QUANTIDADE'] = pd.to_numeric(df_prod['QUANTIDADE'], errors='coerce').fillna(0).astype(int)
 
-            # Detecção automática do Banco - Sem precisar de menu suspenso!
             produtos_comissao = df_com['PRODUTO'].dropna().unique()
             bancos_sugeridos = df_prod[df_prod['PRODUTO'].isin(produtos_comissao)]['BANCO'].value_counts()
             banco_selecionado = bancos_sugeridos.index[0] if not bancos_sugeridos.empty else df_prod['BANCO'].iloc[0]
@@ -60,13 +58,11 @@ if arquivo_comissao is not None and arquivo_producao is not None:
             total_prod_banco = df_prod_banco['VALOR PROPOSTA'].sum()
             perc_banco_total = (total_prod_banco / total_prod_geral * 100) if total_prod_geral > 0 else 0
 
-            # Informa qual banco o robô detectou
             st.sidebar.success(f"🏦 Banco detectado: **{banco_selecionado}**")
 
             # ==========================================
-            # 3. TOP 10 + CLT/FGTS (AGORA GARANTIDO!)
+            # 3. TOP 10 + CLT/FGTS
             # ==========================================
-            # Filtra a produção APENAS pelos convênios válidos da comissão ANTES de fazer o rank dos maiores
             df_prod_banco_validos = df_prod_banco[df_prod_banco['ORGAO'].isin(valid_convenios)]
             
             prod_por_orgao = df_prod_banco_validos.groupby('ORGAO')['VALOR PROPOSTA'].sum().reset_index()
@@ -135,9 +131,9 @@ if arquivo_comissao is not None and arquivo_producao is not None:
                         'Tipo de Produto': row['TIPO DE PRODUTO'],
                         'Produto (Tabela)': row['PRODUTO'],
                         'Prazo Máx.': row['P FINAL'],
-                        'Produção R$ Original': row['VALOR PROPOSTA'], # Usado para os cálculos
+                        'Produção R$ Original': row['VALOR PROPOSTA'],
                         'Produção R$': f"R$ {row['VALOR PROPOSTA']:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."),
-                        'Comissão Total ($)': f"{row['COMISSAO_TOTAL']:.2f}"
+                        'Comissão Total ($)': float(row['COMISSAO_TOTAL']) # Mantém float para facilitar o max()
                     }
                     
                     for grupo in grupos_base:
@@ -154,22 +150,29 @@ if arquivo_comissao is not None and arquivo_producao is not None:
                     resultados.append(linha_resultado)
 
                 # ==========================================
-                # 7. ADICIONANDO AS MÉDIAS
+                # 7. ADICIONANDO AS MÉDIAS E REGRA DE 0 PRODUÇÃO
                 # ==========================================
                 df_parcial = pd.DataFrame(resultados)
                 linhas_finais = []
                 
-                # Identifica dinamicamente as colunas que são de percentual
                 colunas_perc = [col for col in df_parcial.columns if col.startswith('% ')]
                 
                 for (conv, tipo), group_df in df_parcial.groupby(['Convênio', 'Tipo de Produto'], sort=False):
-                    # 7.1. Adiciona as linhas normais daquele bloco, formatando para texto (%)
+                    
+                    # NOVA REGRA: Se a produção total do grupo for 0, mantém só a tabela com MAIOR comissão
+                    if group_df['Produção R$ Original'].sum() == 0:
+                        idx_max_comissao = group_df['Comissão Total ($)'].idxmax()
+                        group_df = group_df.loc[[idx_max_comissao]]
+                    
+                    # 7.1. Adiciona as linhas normais daquele bloco
                     for _, row in group_df.iterrows():
                         row_dict = row.to_dict()
                         for c in colunas_perc:
                             if pd.notnull(row_dict[c]):
                                 row_dict[c] = f"{row_dict[c]:.2f}%"
-                        # Remove a coluna temporária usada apenas pra cálculo
+                        
+                        # Formata a comissão para string com 2 casas decimais
+                        row_dict['Comissão Total ($)'] = f"{row_dict['Comissão Total ($)']:.2f}"
                         row_dict.pop('Produção R$ Original', None)
                         linhas_finais.append(row_dict)
                         
@@ -182,7 +185,7 @@ if arquivo_comissao is not None and arquivo_producao is not None:
                         'Produção R$': '-',
                         'Comissão Total ($)': '-'
                     }
-                    # Calcula a média pra cada coluna de comissão e formata
+                    # Calcula a média (que no caso de prod 0 será exatamente o valor da maior tabela)
                     for c in colunas_perc:
                         media_val = group_df[c].mean()
                         media_row[c] = f"{media_val:.2f}%" if pd.notnull(media_val) else "0.00%"
@@ -194,10 +197,11 @@ if arquivo_comissao is not None and arquivo_producao is not None:
                 # ==========================================
                 # 8. EXIBIÇÃO NO DASHBOARD
                 # ==========================================
-                st.success("Dados processados com sucesso! Exibindo ~70% do volume com a linha de médias inclusa.")
+                st.success("Dados processados com sucesso! Exibindo ~70% do volume com a linha de médias inteligente.")
                 
                 col1, col2, col3, col4 = st.columns(4)
                 
+                # Conta quantidade única excluindo a linha de média
                 qtd_convenios = df_parcial['Convênio'].nunique()
                 qtd_tabelas = df_parcial['Produto (Tabela)'].nunique()
                 soma_prod_exibida = df_parcial['Produção R$ Original'].sum()
@@ -225,7 +229,6 @@ if arquivo_comissao is not None and arquivo_producao is not None:
                 
                 st.subheader("Tabela de Equivalência (%)")
                 
-                # Deixa a linha de MÉDIA destacada (em negrito e fundo diferente)
                 def style_media(row):
                     if row['Produto (Tabela)'] == '➡️ MÉDIA DO GRUPO':
                         return ['background-color: #f0f2f6; font-weight: bold; color: #000000;'] * len(row)
