@@ -10,7 +10,6 @@ st.markdown("Faça o upload da planilha geral de comissões e da planilha de pro
 # Barra lateral para os Filtros do BI
 st.sidebar.image("https://cdn-icons-png.flaticon.com/512/320/320384.png", width=100)
 st.sidebar.title("Filtros do B.I.")
-st.sidebar.markdown("Use as opções abaixo para refinar os dados.")
 
 # Componentes para upload dos arquivos (Lado a lado)
 col_up1, col_up2 = st.columns(2)
@@ -19,46 +18,12 @@ arquivo_producao = col_up2.file_uploader("2. Arquivo de PRODUÇÃO .csv ou .xlsx
 
 if arquivo_comissao is not None and arquivo_producao is not None:
     try:
-        with st.spinner("Cruzando dados de comissão e produção..."):
+        with st.spinner("Cruzando dados e calculando médias..."):
             # ==========================================
-            # 1. LEITURA DOS ARQUIVOS
+            # 1. LEITURA E LIMPEZA COMISSÕES
             # ==========================================
             df_com = pd.read_excel(arquivo_comissao, sheet_name=1)
             
-            if arquivo_producao.name.endswith('.csv'):
-                # engine python e sep=None ajuda a ler tanto CSV separado por vírgula quanto ponto-e-vírgula
-                df_prod = pd.read_csv(arquivo_producao, sep=None, engine='python')
-            else:
-                df_prod = pd.read_excel(arquivo_producao)
-            
-            df_prod['VALOR PROPOSTA'] = pd.to_numeric(df_prod['VALOR PROPOSTA'], errors='coerce').fillna(0)
-            
-            # NOVO: Garante que a quantidade (prazo da produção) seja número para cruzarmos depois
-            df_prod['QUANTIDADE'] = pd.to_numeric(df_prod['QUANTIDADE'], errors='coerce').fillna(0).astype(int)
-
-            # ==========================================
-            # 1.5 FILTRO DE BANCO
-            # ==========================================
-            lista_bancos = sorted(df_prod['BANCO'].dropna().unique().tolist())
-            
-            produtos_comissao = df_com['PRODUTO'].dropna().unique()
-            bancos_sugeridos = df_prod[df_prod['PRODUTO'].isin(produtos_comissao)]['BANCO'].value_counts()
-            
-            banco_padrao = bancos_sugeridos.index[0] if not bancos_sugeridos.empty else lista_bancos[0]
-            idx_padrao = lista_bancos.index(banco_padrao) if banco_padrao in lista_bancos else 0
-            
-            banco_selecionado = st.sidebar.selectbox("🏦 Banco Analisado", options=lista_bancos, index=idx_padrao)
-            
-            # Filtra a produção APENAS para o banco selecionado
-            df_prod_banco = df_prod[df_prod['BANCO'] == banco_selecionado]
-            
-            total_prod_geral = df_prod['VALOR PROPOSTA'].sum()
-            total_prod_banco = df_prod_banco['VALOR PROPOSTA'].sum()
-            perc_banco_total = (total_prod_banco / total_prod_geral * 100) if total_prod_geral > 0 else 0
-
-            # ==========================================
-            # 2. LIMPEZA BASE DE COMISSÕES
-            # ==========================================
             df_com = df_com[~df_com['CONVENIO'].astype(str).str.contains('INSS', case=False, na=False)]
             df_com = df_com[~df_com['TIPO DE PRODUTO'].astype(str).isin(['T', 'CB'])]
             df_com = df_com[df_com['TABELA PACOTE'].astype(str).str.strip().str.upper() != 'S']
@@ -70,10 +35,41 @@ if arquivo_comissao is not None and arquivo_producao is not None:
             max_p_final = df_com.groupby(['CONVENIO', 'TIPO DE PRODUTO'])['P FINAL'].transform('max')
             df_com = df_com[df_com['P FINAL'] == max_p_final]
 
+            # Salva os convênios que sobreviveram aos filtros de limpeza
+            valid_convenios = df_com['CONVENIO'].dropna().unique().tolist()
+
             # ==========================================
-            # 3. TRATAMENTO DA PRODUÇÃO & TOP 10 + CLT/FGTS
+            # 2. LEITURA E AUTO-FILTRO DE BANCO (PRODUÇÃO)
             # ==========================================
-            prod_por_orgao = df_prod_banco.groupby('ORGAO')['VALOR PROPOSTA'].sum().reset_index()
+            if arquivo_producao.name.endswith('.csv'):
+                df_prod = pd.read_csv(arquivo_producao, sep=None, engine='python')
+            else:
+                df_prod = pd.read_excel(arquivo_producao)
+            
+            df_prod['VALOR PROPOSTA'] = pd.to_numeric(df_prod['VALOR PROPOSTA'], errors='coerce').fillna(0)
+            df_prod['QUANTIDADE'] = pd.to_numeric(df_prod['QUANTIDADE'], errors='coerce').fillna(0).astype(int)
+
+            # Detecção automática do Banco - Sem precisar de menu suspenso!
+            produtos_comissao = df_com['PRODUTO'].dropna().unique()
+            bancos_sugeridos = df_prod[df_prod['PRODUTO'].isin(produtos_comissao)]['BANCO'].value_counts()
+            banco_selecionado = bancos_sugeridos.index[0] if not bancos_sugeridos.empty else df_prod['BANCO'].iloc[0]
+            
+            df_prod_banco = df_prod[df_prod['BANCO'] == banco_selecionado]
+            
+            total_prod_geral = df_prod['VALOR PROPOSTA'].sum()
+            total_prod_banco = df_prod_banco['VALOR PROPOSTA'].sum()
+            perc_banco_total = (total_prod_banco / total_prod_geral * 100) if total_prod_geral > 0 else 0
+
+            # Informa qual banco o robô detectou
+            st.sidebar.success(f"🏦 Banco detectado: **{banco_selecionado}**")
+
+            # ==========================================
+            # 3. TOP 10 + CLT/FGTS (AGORA GARANTIDO!)
+            # ==========================================
+            # Filtra a produção APENAS pelos convênios válidos da comissão ANTES de fazer o rank dos maiores
+            df_prod_banco_validos = df_prod_banco[df_prod_banco['ORGAO'].isin(valid_convenios)]
+            
+            prod_por_orgao = df_prod_banco_validos.groupby('ORGAO')['VALOR PROPOSTA'].sum().reset_index()
             prod_por_orgao = prod_por_orgao.sort_values(by='VALOR PROPOSTA', ascending=False)
             
             orgaos_destaque = prod_por_orgao[prod_por_orgao['ORGAO'].astype(str).str.upper().isin(['FGTS', 'CLT'])]['ORGAO'].tolist()
@@ -82,12 +78,10 @@ if arquivo_comissao is not None and arquivo_producao is not None:
             top_convenios_padrao = list(set(orgaos_destaque + outros_orgaos))
             
             # ==========================================
-            # 4. FILTROS INTERATIVOS DO USUÁRIO (B.I.)
+            # 4. FILTROS INTERATIVOS DO USUÁRIO
             # ==========================================
-            lista_convenios_comissao = df_com['CONVENIO'].dropna().unique().tolist()
-            defaults_validos = [c for c in top_convenios_padrao if c in lista_convenios_comissao]
-            
-            convenios_selecionados = st.sidebar.multiselect("🏢 Selecione o Convênio", options=lista_convenios_comissao, default=defaults_validos)
+            st.sidebar.markdown("Use as opções abaixo para refinar os dados.")
+            convenios_selecionados = st.sidebar.multiselect("🏢 Selecione o Convênio", options=valid_convenios, default=top_convenios_padrao)
             
             lista_produtos_comissao = df_com['TIPO DE PRODUTO'].dropna().unique().tolist()
             produtos_selecionados = st.sidebar.multiselect("📦 Selecione o Produto", options=lista_produtos_comissao, default=lista_produtos_comissao)
@@ -98,16 +92,12 @@ if arquivo_comissao is not None and arquivo_producao is not None:
                 st.warning("⚠️ Nenhum dado de comissão encontrado para os filtros selecionados.")
             else:
                 # ==========================================
-                # 5. CRUZAMENTO DE DADOS E REGRA DOS 70% (APENAS PRAZO MÁXIMO)
+                # 5. CURVA ABC (70%) - PRAZO EXATO
                 # ==========================================
-                # NOVO: Cruza a produção com o prazo máximo da comissão para somar apenas o que bate
                 prazos_maximos = df_filtrado[['PRODUTO', 'P FINAL']].drop_duplicates()
                 df_prod_banco_com_prazo = df_prod_banco.merge(prazos_maximos, on='PRODUTO', how='inner')
-                
-                # NOVO: Filtra a produção onde a QUANTIDADE (prazo real da venda) é igual ao P FINAL da comissão
                 df_prod_banco_max_prazo = df_prod_banco_com_prazo[df_prod_banco_com_prazo['QUANTIDADE'] == df_prod_banco_com_prazo['P FINAL']]
                 
-                # Agora soma a produção usando APENAS os dados com o prazo exato
                 prod_por_produto = df_prod_banco_max_prazo.groupby('PRODUTO')['VALOR PROPOSTA'].sum().reset_index()
                 
                 df_filtrado = df_filtrado.merge(prod_por_produto, on='PRODUTO', how='left')
@@ -119,7 +109,6 @@ if arquivo_comissao is not None and arquivo_producao is not None:
                 df_filtrado['CUMSUM_PROD'] = df_filtrado.groupby(['CONVENIO', 'TIPO DE PRODUTO'])['VALOR PROPOSTA'].cumsum()
                 
                 df_filtrado['% CUMULATIVA'] = (df_filtrado['CUMSUM_PROD'] / df_filtrado['PROD_TOTAL_GRUPO']).fillna(0)
-                
                 df_filtrado['% CUMULATIVA_ANTERIOR'] = df_filtrado.groupby(['CONVENIO', 'TIPO DE PRODUTO'])['% CUMULATIVA'].shift(1).fillna(0)
                 df_70 = df_filtrado[df_filtrado['% CUMULATIVA_ANTERIOR'] < 0.70]
                 
@@ -138,8 +127,6 @@ if arquivo_comissao is not None and arquivo_producao is not None:
                                'EMP 100', 'VIP', 'VIP 1', 'VIP 2', 'VIP 3', 'MASTER', 'TESTE8', 'TESTE9', 'TESTE10']
                 
                 resultados = []
-                
-                # NOVO: Agora agrupamos por P FINAL também para podermos exibi-lo na tabela
                 df_agrupado = df_70.groupby(['CONVENIO', 'TIPO DE PRODUTO', 'PRODUTO', 'P FINAL']).sum(numeric_only=True).reset_index()
                 
                 for index, row in df_agrupado.iterrows():
@@ -147,44 +134,78 @@ if arquivo_comissao is not None and arquivo_producao is not None:
                         'Convênio': row['CONVENIO'],
                         'Tipo de Produto': row['TIPO DE PRODUTO'],
                         'Produto (Tabela)': row['PRODUTO'],
-                        'Prazo Máx.': row['P FINAL'], # NOVA COLUNA
+                        'Prazo Máx.': row['P FINAL'],
+                        'Produção R$ Original': row['VALOR PROPOSTA'], # Usado para os cálculos
                         'Produção R$': f"R$ {row['VALOR PROPOSTA']:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."),
-                        'Comissão Total ($)': round(row['COMISSAO_TOTAL'], 2)
+                        'Comissão Total ($)': f"{row['COMISSAO_TOTAL']:.2f}"
                     }
                     
                     for grupo in grupos_base:
                         colunas_do_grupo = [col for col in df_agrupado.columns if str(col).replace("'", "").strip() == grupo]
-                        
                         if len(colunas_do_grupo) >= 2:
                             coluna_primeira = colunas_do_grupo[0]
                             coluna_ultima = colunas_do_grupo[-1]
                             
                             soma_grupo = row[coluna_primeira] + row[coluna_ultima]
+                            percentual = (soma_grupo / row['COMISSAO_TOTAL']) * 100 if row['COMISSAO_TOTAL'] > 0 else 0
                             
-                            if row['COMISSAO_TOTAL'] > 0:
-                                percentual = (soma_grupo / row['COMISSAO_TOTAL']) * 100
-                            else:
-                                percentual = 0
-                                
-                            linha_resultado[f'% {grupo}'] = f"{percentual:.2f}%"
+                            linha_resultado[f'% {grupo}'] = percentual
                             
                     resultados.append(linha_resultado)
 
                 # ==========================================
-                # 7. EXIBIÇÃO NO DASHBOARD
+                # 7. ADICIONANDO AS MÉDIAS
                 # ==========================================
-                df_final = pd.DataFrame(resultados)
+                df_parcial = pd.DataFrame(resultados)
+                linhas_finais = []
                 
-                st.success("Dados processados com sucesso! Exibindo apenas as tabelas responsáveis por ~70% do volume (considerando apenas a produção do Prazo Máximo).")
+                # Identifica dinamicamente as colunas que são de percentual
+                colunas_perc = [col for col in df_parcial.columns if col.startswith('% ')]
+                
+                for (conv, tipo), group_df in df_parcial.groupby(['Convênio', 'Tipo de Produto'], sort=False):
+                    # 7.1. Adiciona as linhas normais daquele bloco, formatando para texto (%)
+                    for _, row in group_df.iterrows():
+                        row_dict = row.to_dict()
+                        for c in colunas_perc:
+                            if pd.notnull(row_dict[c]):
+                                row_dict[c] = f"{row_dict[c]:.2f}%"
+                        # Remove a coluna temporária usada apenas pra cálculo
+                        row_dict.pop('Produção R$ Original', None)
+                        linhas_finais.append(row_dict)
+                        
+                    # 7.2. Cria a linha da Média
+                    media_row = {
+                        'Convênio': conv,
+                        'Tipo de Produto': tipo,
+                        'Produto (Tabela)': '➡️ MÉDIA DO GRUPO',
+                        'Prazo Máx.': '-',
+                        'Produção R$': '-',
+                        'Comissão Total ($)': '-'
+                    }
+                    # Calcula a média pra cada coluna de comissão e formata
+                    for c in colunas_perc:
+                        media_val = group_df[c].mean()
+                        media_row[c] = f"{media_val:.2f}%" if pd.notnull(media_val) else "0.00%"
+                        
+                    linhas_finais.append(media_row)
+
+                df_final = pd.DataFrame(linhas_finais)
+
+                # ==========================================
+                # 8. EXIBIÇÃO NO DASHBOARD
+                # ==========================================
+                st.success("Dados processados com sucesso! Exibindo ~70% do volume com a linha de médias inclusa.")
                 
                 col1, col2, col3, col4 = st.columns(4)
-                col1.metric("Convênios Filtrados", len(df_final['Convênio'].unique()))
-                col2.metric("Tabelas Selecionadas", len(df_final['Produto (Tabela)'].unique()))
                 
-                soma_prod_exibida = df_70['VALOR PROPOSTA'].sum()
+                qtd_convenios = df_parcial['Convênio'].nunique()
+                qtd_tabelas = df_parcial['Produto (Tabela)'].nunique()
+                soma_prod_exibida = df_parcial['Produção R$ Original'].sum()
+                
+                col1.metric("Convênios Filtrados", qtd_convenios)
+                col2.metric("Tabelas Selecionadas", qtd_tabelas)
+                
                 soma_formatada = f"R$ {soma_prod_exibida:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-                
-                # Representatividade do que foi filtrado frente ao banco todo
                 perc_filtrado_banco = (soma_prod_exibida / total_prod_banco * 100) if total_prod_banco > 0 else 0
                 
                 col3.metric(
@@ -203,7 +224,14 @@ if arquivo_comissao is not None and arquivo_producao is not None:
                 )
                 
                 st.subheader("Tabela de Equivalência (%)")
-                st.dataframe(df_final, use_container_width=True, hide_index=True)
+                
+                # Deixa a linha de MÉDIA destacada (em negrito e fundo diferente)
+                def style_media(row):
+                    if row['Produto (Tabela)'] == '➡️ MÉDIA DO GRUPO':
+                        return ['background-color: #f0f2f6; font-weight: bold; color: #000000;'] * len(row)
+                    return [''] * len(row)
+                    
+                st.dataframe(df_final.style.apply(style_media, axis=1), use_container_width=True, hide_index=True)
                 
                 csv = df_final.to_csv(index=False, sep=';', decimal=',')
                 st.download_button(
