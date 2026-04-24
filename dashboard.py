@@ -97,12 +97,7 @@ if arquivo_upload is not None:
             # 5. EXIBIÇÃO NO DASHBOARD
             df_final = pd.DataFrame(resultados)
             
-            st.success("Dados carregados e filtrados com sucesso!")
-            
-            col1, col2 = st.columns(2)
-            col1.metric("Total de Convênios Analisados", len(df_final['Convênio'].unique()))
-            col2.metric("Comissão Total na Visualização ($)", f"{df_final['Comissão Total ($)'].sum():,.2f}")
-            
+            st.success("Dados carregados e filtrados com sucesso!")          
             st.subheader("Tabela de Equivalência de Comissões (%)")
             st.dataframe(df_final, use_container_width=True)
             
