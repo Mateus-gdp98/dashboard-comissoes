@@ -32,6 +32,9 @@ if arquivo_comissao is not None and arquivo_producao is not None:
                 df_prod = pd.read_excel(arquivo_producao)
             
             df_prod['VALOR PROPOSTA'] = pd.to_numeric(df_prod['VALOR PROPOSTA'], errors='coerce').fillna(0)
+            
+            # NOVO: Garante que a quantidade (prazo da produção) seja número para cruzarmos depois
+            df_prod['QUANTIDADE'] = pd.to_numeric(df_prod['QUANTIDADE'], errors='coerce').fillna(0).astype(int)
 
             # ==========================================
             # 1.5 FILTRO DE BANCO
@@ -63,7 +66,7 @@ if arquivo_comissao is not None and arquivo_producao is not None:
             legenda_produtos = {'N': 'Novo', 'C': 'Compra', 'R': 'Refin', 'F': 'Refin de Port', 'P': 'Port'}
             df_com['TIPO DE PRODUTO'] = df_com['TIPO DE PRODUTO'].map(legenda_produtos).fillna(df_com['TIPO DE PRODUTO'])
             
-            df_com['P FINAL'] = pd.to_numeric(df_com['P FINAL'], errors='coerce').fillna(0)
+            df_com['P FINAL'] = pd.to_numeric(df_com['P FINAL'], errors='coerce').fillna(0).astype(int)
             max_p_final = df_com.groupby(['CONVENIO', 'TIPO DE PRODUTO'])['P FINAL'].transform('max')
             df_com = df_com[df_com['P FINAL'] == max_p_final]
 
@@ -95,9 +98,17 @@ if arquivo_comissao is not None and arquivo_producao is not None:
                 st.warning("⚠️ Nenhum dado de comissão encontrado para os filtros selecionados.")
             else:
                 # ==========================================
-                # 5. CRUZAMENTO DE DADOS E REGRA DOS 70%
+                # 5. CRUZAMENTO DE DADOS E REGRA DOS 70% (APENAS PRAZO MÁXIMO)
                 # ==========================================
-                prod_por_produto = df_prod_banco.groupby('PRODUTO')['VALOR PROPOSTA'].sum().reset_index()
+                # NOVO: Cruza a produção com o prazo máximo da comissão para somar apenas o que bate
+                prazos_maximos = df_filtrado[['PRODUTO', 'P FINAL']].drop_duplicates()
+                df_prod_banco_com_prazo = df_prod_banco.merge(prazos_maximos, on='PRODUTO', how='inner')
+                
+                # NOVO: Filtra a produção onde a QUANTIDADE (prazo real da venda) é igual ao P FINAL da comissão
+                df_prod_banco_max_prazo = df_prod_banco_com_prazo[df_prod_banco_com_prazo['QUANTIDADE'] == df_prod_banco_com_prazo['P FINAL']]
+                
+                # Agora soma a produção usando APENAS os dados com o prazo exato
+                prod_por_produto = df_prod_banco_max_prazo.groupby('PRODUTO')['VALOR PROPOSTA'].sum().reset_index()
                 
                 df_filtrado = df_filtrado.merge(prod_por_produto, on='PRODUTO', how='left')
                 df_filtrado['VALOR PROPOSTA'] = df_filtrado['VALOR PROPOSTA'].fillna(0)
@@ -128,13 +139,15 @@ if arquivo_comissao is not None and arquivo_producao is not None:
                 
                 resultados = []
                 
-                df_agrupado = df_70.groupby(['CONVENIO', 'TIPO DE PRODUTO', 'PRODUTO']).sum(numeric_only=True).reset_index()
+                # NOVO: Agora agrupamos por P FINAL também para podermos exibi-lo na tabela
+                df_agrupado = df_70.groupby(['CONVENIO', 'TIPO DE PRODUTO', 'PRODUTO', 'P FINAL']).sum(numeric_only=True).reset_index()
                 
                 for index, row in df_agrupado.iterrows():
                     linha_resultado = {
                         'Convênio': row['CONVENIO'],
                         'Tipo de Produto': row['TIPO DE PRODUTO'],
                         'Produto (Tabela)': row['PRODUTO'],
+                        'Prazo Máx.': row['P FINAL'], # NOVA COLUNA
                         'Produção R$': f"R$ {row['VALOR PROPOSTA']:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."),
                         'Comissão Total ($)': round(row['COMISSAO_TOTAL'], 2)
                     }
@@ -162,7 +175,7 @@ if arquivo_comissao is not None and arquivo_producao is not None:
                 # ==========================================
                 df_final = pd.DataFrame(resultados)
                 
-                st.success("Dados processados com sucesso! Exibindo apenas as tabelas responsáveis por ~70% do volume.")
+                st.success("Dados processados com sucesso! Exibindo apenas as tabelas responsáveis por ~70% do volume (considerando apenas a produção do Prazo Máximo).")
                 
                 col1, col2, col3, col4 = st.columns(4)
                 col1.metric("Convênios Filtrados", len(df_final['Convênio'].unique()))
@@ -171,7 +184,7 @@ if arquivo_comissao is not None and arquivo_producao is not None:
                 soma_prod_exibida = df_70['VALOR PROPOSTA'].sum()
                 soma_formatada = f"R$ {soma_prod_exibida:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
                 
-                # NOVO CÁLCULO: Representatividade do que foi filtrado frente ao banco todo
+                # Representatividade do que foi filtrado frente ao banco todo
                 perc_filtrado_banco = (soma_prod_exibida / total_prod_banco * 100) if total_prod_banco > 0 else 0
                 
                 col3.metric(
